@@ -22,13 +22,30 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/uuid"
+	"github.com/postmanlabs/postman-insights-agent/data_masks"
 	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
+	"github.com/postmanlabs/postman-insights-agent/test_utils"
 	"github.com/stretchr/testify/assert"
 )
 
 var (
 	fakeSvc = akid.NewServiceID(uuid.Must(uuid.Parse("8b2cf196-87fe-4e53-a6b9-1452d7efb863")))
 	fakeLrn = akid.NewLearnSessionID(uuid.Must(uuid.Parse("2b5dd735-9fc0-4365-93e8-74bf86d3f853")))
+)
+
+var (
+	dataFromList                 = test_utils.DataFromList
+	dataFromPrimitive            = test_utils.DataFromPrimitive
+	dataFromStruct               = test_utils.DataFromStruct
+	newTestAuthSpec              = test_utils.NewTestAuthSpec
+	newTestBodySpecFromData      = test_utils.NewTestBodySpecFromData
+	newTestBodySpecFromStruct    = test_utils.NewTestBodySpecFromStruct
+	newTestCookieSpec            = test_utils.NewTestCookieSpec
+	newTestHeaderSpec            = test_utils.NewTestHeaderSpec
+	newTestMultipartFormDataSpec = test_utils.NewTestMultipartFormDataSpec
+	newTestQueryParamSpec        = test_utils.NewTestQueryParamSpec
+
+	redactionString = data_masks.RedactionString
 )
 
 type witnessRecorder struct {
@@ -52,8 +69,8 @@ func (wr *witnessRecorder) recordAsyncReportsUpload(args ...interface{}) {
 	}
 }
 
-// Make sure we obfuscate values before uploading.
-func TestObfuscate(t *testing.T) {
+// Make sure we redact values before uploading.
+func TestRedact(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
@@ -65,6 +82,12 @@ func TestObfuscate(t *testing.T) {
 		Do(rec.recordAsyncReportsUpload).
 		AnyTimes().
 		Return(nil)
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
@@ -95,7 +118,8 @@ func TestObfuscate(t *testing.T) {
 		},
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	assert.NoError(t, err)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -142,105 +166,6 @@ func TestObfuscate(t *testing.T) {
 	}
 }
 
-func dataFromPrimitive(p *pb.Primitive) *pb.Data {
-	return &pb.Data{Value: &pb.Data_Primitive{Primitive: p}}
-}
-
-func dataFromStruct(fields map[string]*pb.Data) *pb.Data {
-	return &pb.Data{Value: &pb.Data_Struct{Struct: &pb.Struct{Fields: fields}}}
-}
-
-func dataFromList(elems ...*pb.Data) *pb.Data {
-	return &pb.Data{Value: &pb.Data_List{List: &pb.List{Elems: elems}}}
-}
-
-func newTestBodySpecFromStruct(statusCode int, contentType pb.HTTPBody_ContentType, originalContentType string, s map[string]*pb.Data) *pb.Data {
-	return newTestBodySpecFromData(statusCode, contentType, originalContentType, dataFromStruct(s))
-}
-
-func newTestBodySpecFromData(statusCode int, contentType pb.HTTPBody_ContentType, originalContentType string, d *pb.Data) *pb.Data {
-	d.Meta = newBodyDataMeta(statusCode, contentType, originalContentType)
-	return d
-}
-
-func newTestMultipartFormDataSpec(responseCode int, d *pb.Data) *pb.Data {
-	d.Meta = newDataMeta(&pb.HTTPMeta{
-		Location: &pb.HTTPMeta_Multipart{
-			Multipart: &pb.HTTPMultipart{
-				Type: "form-data",
-			},
-		},
-		ResponseCode: int32(responseCode),
-	})
-	return d
-}
-
-func newBodyDataMeta(responseCode int, contentType pb.HTTPBody_ContentType, originalContentType string) *pb.DataMeta {
-	return newDataMeta(&pb.HTTPMeta{
-		Location: &pb.HTTPMeta_Body{
-			Body: &pb.HTTPBody{
-				ContentType: contentType,
-				OtherType:   originalContentType,
-			},
-		},
-		ResponseCode: int32(responseCode),
-	})
-}
-
-func newDataMeta(httpM *pb.HTTPMeta) *pb.DataMeta {
-	return &pb.DataMeta{
-		Meta: &pb.DataMeta_Http{
-			Http: httpM,
-		},
-	}
-}
-
-func newTestHeaderSpec(d *pb.Data, key string, responseCode int) *pb.Data {
-	d.Meta = newDataMeta(&pb.HTTPMeta{
-		Location: &pb.HTTPMeta_Header{
-			Header: &pb.HTTPHeader{
-				Key: key,
-			},
-		},
-		ResponseCode: int32(responseCode),
-	})
-	return d
-}
-
-func newTestQueryParamSpec(d *pb.Data, key string, responseCode int) *pb.Data {
-	d.Meta = newDataMeta(&pb.HTTPMeta{
-		Location: &pb.HTTPMeta_Query{
-			Query: &pb.HTTPQuery{
-				Key: key,
-			},
-		},
-		ResponseCode: int32(responseCode),
-	})
-	return d
-}
-
-func newTestAuthSpec(d *pb.Data, responseCode int) *pb.Data {
-	d.Meta = newDataMeta(&pb.HTTPMeta{
-		Location: &pb.HTTPMeta_Auth{
-			Auth: &pb.HTTPAuth{},
-		},
-		ResponseCode: int32(responseCode),
-	})
-	return d
-}
-
-func newTestCookieSpec(d *pb.Data, key string, responseCode int) *pb.Data {
-	d.Meta = newDataMeta(&pb.HTTPMeta{
-		Location: &pb.HTTPMeta_Cookie{
-			Cookie: &pb.HTTPCookie{
-				Key: key,
-			},
-		},
-		ResponseCode: int32(responseCode),
-	})
-	return d
-}
-
 // Verify processing latency computation
 func TestTiming(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -254,6 +179,12 @@ func TestTiming(t *testing.T) {
 		Do(rec.recordAsyncReportsUpload).
 		AnyTimes().
 		Return(nil)
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
 	streamID := uuid.New()
 	startTime := time.Now()
@@ -282,7 +213,8 @@ func TestTiming(t *testing.T) {
 		FinalPacketTime: startTime.Add(13 * time.Millisecond),
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	assert.NoError(t, err)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Close())
@@ -303,8 +235,14 @@ func TestMultipleInterfaces(t *testing.T) {
 		AsyncReportsUpload(gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().
 		Return(nil)
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
-	bc := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	bc, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), false, nil)
+	assert.NoError(t, err)
 
 	var wg sync.WaitGroup
 	fakeTrace := func(count int, start_seq int) {
@@ -363,7 +301,7 @@ func TestFlushExit(t *testing.T) {
 	// Test should exit immediately
 }
 
-func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
+func TestOnlyRedactNonErrorResponses(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockClient := mockrest.NewMockLearnClient(ctrl)
 	defer ctrl.Finish()
@@ -375,6 +313,12 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 		Do(rec.recordAsyncReportsUpload).
 		AnyTimes().
 		Return(nil)
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
 
 	streamID := uuid.New()
 	req := akinet.ParsedNetworkTraffic{
@@ -434,7 +378,8 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 		},
 	}
 
-	col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+	col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+	assert.NoError(t, err)
 	assert.NoError(t, col.Process(req))
 	assert.NoError(t, col.Process(resp))
 	assert.NoError(t, col.Process(errReq))
@@ -515,7 +460,7 @@ func TestOnlyObfuscateNonErrorResponses(t *testing.T) {
 	}
 }
 
-func TestObfuscationConfigs(t *testing.T) {
+func TestRedactionConfigs(t *testing.T) {
 	// Prepare a test cases
 	streamID := uuid.New()
 	type testCase struct {
@@ -1228,6 +1173,12 @@ func TestObfuscationConfigs(t *testing.T) {
 		AnyTimes().
 		Return(nil)
 
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
 	i := -1
 	for name, testCase := range testCases {
 		i++
@@ -1236,7 +1187,8 @@ func TestObfuscationConfigs(t *testing.T) {
 		req := akinet.ParsedNetworkTraffic{Content: testCase.request}
 		resp := akinet.ParsedNetworkTraffic{Content: testCase.response}
 
-		col := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+		col, err := NewBackendCollector(fakeSvc, fakeLrn, mockClient, optionals.None[int](), NewPacketCounter(), true, nil)
+		assert.NoError(t, err)
 		assert.NoError(t, col.Process(req))
 		assert.NoError(t, col.Process(resp))
 		assert.NoError(t, col.Close())

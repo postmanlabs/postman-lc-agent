@@ -1,11 +1,23 @@
-package trace
+package data_masks
 
 import (
 	"testing"
 
 	pb "github.com/akitasoftware/akita-ir/go/api_spec"
+	"github.com/akitasoftware/akita-libs/akid"
+	kgxapi "github.com/akitasoftware/akita-libs/api_schema"
 	"github.com/akitasoftware/akita-libs/spec_util"
+	"github.com/golang/mock/gomock"
+	mockrest "github.com/postmanlabs/postman-insights-agent/rest/mock"
+	"github.com/postmanlabs/postman-insights-agent/test_utils"
 	"github.com/stretchr/testify/assert"
+)
+
+var (
+	dataFromList              = test_utils.DataFromList
+	dataFromPrimitive         = test_utils.DataFromPrimitive
+	newTestBodySpecFromStruct = test_utils.NewTestBodySpecFromStruct
+	newTestHeaderSpec         = test_utils.NewTestHeaderSpec
 )
 
 var testWitness *pb.Witness = &pb.Witness{
@@ -44,7 +56,18 @@ var testWitness *pb.Witness = &pb.Witness{
 }
 
 func TestRedaction16CharacterIdentifier(t *testing.T) {
-	o := NewObfuscator()
+	ctrl := gomock.NewController(t)
+	mockClient := mockrest.NewMockLearnClient(ctrl)
+	defer ctrl.Finish()
+
+	mockClient.
+		EXPECT().
+		GetDynamicAgentConfigForService(gomock.Any(), gomock.Any()).
+		AnyTimes().
+		Return(kgxapi.NewServiceAgentConfig(), nil)
+
+	o, err := NewRedactor(akid.GenerateServiceID(), mockClient)
+	assert.NoError(t, err)
 
 	origVal1 := "aaaaaaaaaaaaaaaa"
 	origVal2 := "0123456789012345"
@@ -78,21 +101,12 @@ func TestRedaction16CharacterIdentifier(t *testing.T) {
 }
 
 func BenchmarkRedaction(b *testing.B) {
-	o := NewObfuscator()
+	o, err := NewRedactor(akid.GenerateServiceID(), nil)
+	assert.NoError(b, err)
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		o.RedactSensitiveData(testWitness.Method)
-	}
-}
-
-func BenchmarkObfuscation(b *testing.B) {
-	o := NewObfuscator()
-
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		o.ZeroAllPrimitivesInMethod(testWitness.Method)
 	}
 }
